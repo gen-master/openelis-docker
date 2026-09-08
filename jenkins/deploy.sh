@@ -8,21 +8,27 @@ APP_DIR="${APP_DIR:-/srv/openelis/uat/app}"          # persistent clone - NOT $W
 REPO_URL="${REPO_URL:-https://github.com/gen-master/openelis-docker.git}"
 GIT_REF="${GIT_REF:-gen-UAT}"
 BACKUP_DIR="${BACKUP_DIR:-/srv/openelis/uat/backups}"
-SECRETS_FILE="${SECRETS_FILE:-/srv/openelis/uat/secrets.env}"   # optional: OE_DB_PASSWORD / PG_SUPERUSER_PASSWORD kept out of git
+# OE_ENV_FILE: path of the Jenkins "Secret file" credential holding the real .env (bound in Build Environment).
 C="docker compose"
 
 echo "== 1. code"   # clone once, then fast-forward only. Never reset --hard: containers write root-owned files under configs/logs
 [ -d "$APP_DIR/.git" ] || git clone --branch "$GIT_REF" "$REPO_URL" "$APP_DIR"
 cd "$APP_DIR"
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "ERROR: tracked files were edited by hand in $APP_DIR:"; git status --short
+  echo "       configs/ and compose are changed in git (commit + push), not on the VM. .env comes from the Jenkins credential."
+  exit 1
+fi
 git fetch origin "$GIT_REF"
 git merge --ff-only "origin/$GIT_REF"
 echo "deploying $(git rev-parse --short HEAD) ($GIT_REF)"
 
-ENV_FILE="$APP_DIR/.env"
-[ -f "$SECRETS_FILE" ] && { set -a; . "$SECRETS_FILE"; set +a; }
+ENV_FILE="$APP_DIR/.env"                       # untracked: written from the credential on every build
+if [ -n "${OE_ENV_FILE:-}" ]; then install -m 600 "$OE_ENV_FILE" "$ENV_FILE"; fi
+[ -f "$ENV_FILE" ] || { echo "ERROR: $ENV_FILE missing - bind the Secret file credential to OE_ENV_FILE (see README)"; exit 1; }
 v() { local x; eval "x=\${$1:-}"; [ -n "$x" ] && { echo "$x"; return; }; grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2- | sed 's/#.*//' | tr -d '[:space:]'; }
 for k in TZ OE_DATA_DIR OE_DB_PASSWORD OE_SITE_CODE PG_SUPERUSER PG_SUPERUSER_PASSWORD PG_CONTAINER; do
-  [ -n "$(v "$k")" ] || { echo "ERROR: $k is empty in $ENV_FILE (or $SECRETS_FILE)"; exit 1; }
+  [ -n "$(v "$k")" ] || { echo "ERROR: $k is empty in $ENV_FILE"; exit 1; }
 done
 PG=$(v PG_CONTAINER); DATA_DIR=$(v OE_DATA_DIR); API_PORT=$(v OE_API_LOCAL_PORT); API_PORT=${API_PORT:-8443}
 

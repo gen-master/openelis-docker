@@ -17,15 +17,16 @@ adapted to run OpenELIS **3.2.2.0** on a VM that already has a Postgres containe
 | autoheal | restarts unhealthy containers | **removed** — no service defines a healthcheck, and it mounted the Docker socket |
 | Network | created by compose | `openelis-network` is **external** — created once on the VM so Postgres can join it before compose runs |
 | Customer uploads (`nce-attachments`) | inside the repo tree | `${OE_DATA_DIR}/nce-attachments`, outside the clone |
-| Configuration values | hardcoded in compose | all in `.env`; missing values block startup (`${VAR:?}`) |
+| Configuration values | hardcoded in compose; `.env` tracked | all in `.env`, which is **not in git** — `.env.example` is the template, the real file is a Jenkins Secret file credential; missing values block startup (`${VAR:?}`) |
 | Deployment | manual | `jenkins/deploy.sh` (also runnable by hand) |
 
 Everything else — `configs/`, nginx template, plugins, translations — is upstream's, unchanged.
 
 ## `.env` — the single configuration file
 
-Compose reads it automatically from this directory; `jenkins/deploy.sh` reads the same file. It is **tracked in
-git**: it is the deployment definition, not a scratch file.
+Compose reads it automatically from this directory; `jenkins/deploy.sh` reads the same file. It is **not in git**
+(it holds passwords). The tracked template is `.env.example`; the real `.env` lives in Jenkins as a *Secret file*
+credential and is written into the clone on every build — see [Deploying with Jenkins](#deploying-with-jenkins).
 
 | Variable | Meaning | Change it… | Secret |
 |---|---|---|---|
@@ -42,13 +43,13 @@ git**: it is the deployment definition, not a scratch file.
 Also change before first `up`, in `docker-compose.yml`: `DEFAULT_PW=adminADMIN!` on `oe.openelis.org` (the
 initial UI admin password) and the FHIR admin credentials in `configs/properties/common.properties:13-14`.
 
-### The two passwords
+### Where the real `.env` lives
 
-`OE_DB_PASSWORD` and `PG_SUPERUSER_PASSWORD` are committed in `.env` with everything else. Consequences: this
-fork must stay **private**, and anyone with read access to it holds the Postgres superuser password. If that ever
-changes, the alternative needs no code change: leave the two blank in `.env` and put them in
-`/srv/openelis/uat/secrets.env` (`chmod 600`) — `jenkins/deploy.sh` exports that file before compose runs, and
-compose takes the environment over `.env`.
+In Jenkins, as a **Secret file** credential (Credentials → Add → Kind: *Secret file* → upload your filled-in
+`.env` → ID `openelis-uat-env`). Nothing with a password is ever in git; `.env` is in `.gitignore`. The build
+binds that credential to `OE_ENV_FILE`, and `deploy.sh` copies it to `/srv/openelis/uat/app/.env` (`chmod 600`)
+before validating and deploying. To change any value — password or not — update the credential and Build.
+A new *key* (not just a value) also goes into `.env.example` and `docker-compose.yml`, through git.
 
 ## Before deploying — check on the VM
 
@@ -77,7 +78,7 @@ Manual version — `jenkins/deploy.sh` does exactly this, idempotently.
 ```bash
 git clone --branch gen-UAT https://github.com/gen-master/openelis-docker.git /srv/openelis/uat/app
 cd /srv/openelis/uat/app
-vi .env                                                      # fill every empty value (see table above)
+cp .env.example .env && vi .env                              # fill every empty value (see table above); .env is gitignored
 mkdir -p /srv/openelis/uat/nce-attachments
 
 docker network create --subnet 172.20.1.0/24 openelis-network
@@ -120,12 +121,19 @@ Freestyle job on an agent **on the VM** (user in the `docker` group):
 | Source Code Management | this fork, branch `*/gen-UAT` — only to obtain the script; the script deploys from `/srv/openelis/uat/app` |
 | Do not allow concurrent builds | on |
 | Execute shell | `#!/bin/bash` newline `exec bash "$WORKSPACE/jenkins/deploy.sh"` — the shebang avoids Jenkins' default `-x`, which would print passwords into the log |
+| Build Environment → Use secret text(s) or file(s) | **Secret file** → Variable `OE_ENV_FILE`, Credential `openelis-uat-env` (the real `.env`) |
 | Parameter (optional) | `GIT_REF`, default `gen-UAT` |
 
 Each build: fast-forward the clone → assert (`:develop` absent, compose parses, no `db.openelis.org` service) →
 create network / attach alias if missing → `pg_dump` + uploads tarball to `/srv/openelis/uat/backups` (skipped on
 the first deploy) → `pull` → `up -d` (fails the build if `db-init` fails) → wait for the app (20 min cap) → `ps`.
-Overridable via environment: `APP_DIR`, `GIT_REF`, `BACKUP_DIR`, `SECRETS_FILE`, `REPO_URL`.
+Overridable via environment: `APP_DIR`, `GIT_REF`, `BACKUP_DIR`, `REPO_URL`; `OE_ENV_FILE` is set by the credential binding.
+
+**Changing configuration later.** Values in `.env` → update the Jenkins credential, Build. Anything in git
+(`docker-compose.yml`, `configs/`, `.env.example`) → edit on the workstation, commit, push `gen-UAT`, Build.
+Never edit tracked files inside `/srv/openelis/uat/app`: the script fast-forwards that clone on every build and
+stops with `ERROR: tracked files were edited by hand` if anything is modified there. `.env` is untracked, so the
+script overwriting it each build never conflicts.
 
 ## Upgrading to a new OpenELIS release
 
@@ -148,6 +156,9 @@ Then run the Jenkins job (or `jenkins/deploy.sh` by hand). Rules:
 - Check whether the new release's DB image moved to a newer Postgres major (`db/Dockerfile` `FROM` line in the
   app repo — `postgres:14.4` today). If it exceeds your server's major, upgrade Postgres first; this stack never touches it.
 - `db-init` bumps with the same tag automatically; on an existing database it does nothing.
+- Upstream still tracks `.env`; this fork removed it. If a release touches upstream's `.env`, the merge reports a
+  modify/delete conflict on it: resolve with `git rm .env`, and carry any *new key* into `.env.example` and the
+  Jenkins credential.
 
 ## Configuration after deployment
 
@@ -164,7 +175,7 @@ Then run the Jenkins job (or `jenkins/deploy.sh` by hand). Rules:
 |---|---|---|
 | `compose up`: `required variable X is missing a value: set in .env` | empty value in `.env` | fill it |
 | `db-init`: `Postgres not reachable after 120s` | alias not attached, wrong `OE_DB_PORT`, or wrong `PG_CONTAINER` | `docker inspect <PG>` → Networks must list `openelis-network` with alias `db.openelis.org`; check `show port` |
-| `db-init`: `password authentication failed for user "<superuser>"` | `PG_SUPERUSER*` wrong | fix `.env` / `secrets.env`, `docker compose up -d` again (safe: nothing was created) |
+| `db-init`: `password authentication failed for user "<superuser>"` | `PG_SUPERUSER*` wrong | fix the Jenkins credential (or `.env` if by hand), deploy again (safe: nothing was created) |
 | `db-init`: `role "clinlims" already exists` but database missing | a previous partial run | `DROP ROLE clinlims;` as superuser, `up -d` again |
 | webapp: `no pg_hba.conf entry for host "172.20.1.121"` | Postgres rejects the subnet | `pg_hba.conf` line above, reload Postgres |
 | webapp: `UnknownHostException: db.openelis.org` | Postgres container was recreated, alias gone | re-run the `docker network connect --alias …` line |

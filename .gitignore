@@ -28,3 +28,4 @@ configs/properties/TotalSystemConfiguration.properties
 configs/properties/ChangedSystemConfiguration.properties
 consideration.md
 .env.secrets
+.env

@@ -1,0 +1,8 @@
+# files consumed on the Linux VM must never carry CRLF (Windows checkouts)
+*.sh        text eol=lf
+*.sql       text eol=lf
+*.yml       text eol=lf
+.env        text eol=lf
+*.properties text eol=lf
+*.conf      text eol=lf
+.env.example text eol=lf
