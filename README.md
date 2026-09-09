@@ -114,26 +114,11 @@ Do not `docker compose up -d` the Postgres stack merely to apply this — that i
 
 ## Deploying with Jenkins
 
-Freestyle job on an agent **on the VM** (user in the `docker` group):
-
-| Setting | Value |
-|---|---|
-| Source Code Management | this fork, branch `*/gen-UAT` — only to obtain the script; the script deploys from `/srv/openelis/uat/app` |
-| Do not allow concurrent builds | on |
-| Execute shell | `#!/bin/bash` newline `exec bash "$WORKSPACE/jenkins/deploy.sh"` — the shebang avoids Jenkins' default `-x`, which would print passwords into the log |
-| Build Environment → Use secret text(s) or file(s) | **Secret file** → Variable `OE_ENV_FILE`, Credential `openelis-uat-env` (the real `.env`) |
-| Parameter (optional) | `GIT_REF`, default `gen-UAT` |
-
-Each build: fast-forward the clone → assert (`:develop` absent, compose parses, no `db.openelis.org` service) →
-create network / attach alias if missing → `pg_dump` + uploads tarball to `/srv/openelis/uat/backups` (skipped on
-the first deploy) → `pull` → `up -d` (fails the build if `db-init` fails) → wait for the app (20 min cap) → `ps`.
-Overridable via environment: `APP_DIR`, `GIT_REF`, `BACKUP_DIR`, `REPO_URL`; `OE_ENV_FILE` is set by the credential binding.
-
-**Changing configuration later.** Values in `.env` → update the Jenkins credential, Build. Anything in git
-(`docker-compose.yml`, `configs/`, `.env.example`) → edit on the workstation, commit, push `gen-UAT`, Build.
-Never edit tracked files inside `/srv/openelis/uat/app`: the script fast-forwards that clone on every build and
-stops with `ERROR: tracked files were edited by hand` if anything is modified there. `.env` is untracked, so the
-script overwriting it each build never conflicts.
+Jenkins runs as a container with no Docker socket; it reaches the host through a named pipe that executes
+command lines, and the host filesystem mounted at `/host`. The deploy is a single Execute-shell step in the
+job (no scripts in this repo): it copies the `.env` Secret-file credential (variable `OE_ENV_FILE`) to the host
+clone, writes `git clone`/`git merge --ff-only` and `docker compose pull && up -d` lines to the pipe, and waits
+for a result file the last piped command writes. `.env` is untracked, so the fast-forward never conflicts with it.
 
 ## Upgrading to a new OpenELIS release
 
