@@ -11,12 +11,19 @@ echo "db-init: waiting for Postgres at $PGHOST:$PGPORT"
 i=0; until pg_isready -q -U "$PG_SUPERUSER"; do i=$((i+1)); [ $i -ge 60 ] && { echo "db-init: Postgres not reachable after 120s"; exit 1; }; sleep 2; done
 
 export PGPASSWORD="$PG_SUPERUSER_PASSWORD"
-if [ "$(psql -U "$PG_SUPERUSER" -d postgres -tAc "select 1 from pg_database where datname='clinlims'")" = "1" ]; then
-  echo "db-init: database clinlims exists - nothing to do"; exit 0
+q() { psql -U "$PG_SUPERUSER" -d "$1" -tAc "$2"; }
+if [ "$(q postgres "select 1 from pg_database where datname='clinlims'")" = "1" ]; then
+  # database exists: complete only if the baseline is in it (login_user is a baseline table)
+  if [ "$(q clinlims "select 1 from information_schema.tables where table_schema='clinlims' and table_name='login_user'")" = "1" ]; then
+    echo "db-init: database clinlims exists with baseline - nothing to do"; exit 0
+  fi
+  echo "db-init: database clinlims exists but has no baseline schema (an earlier run failed) - loading it"
+  q clinlims "drop table if exists clinlims.databasechangelog, clinlims.databasechangeloglock" >/dev/null   # left by a webapp start against the empty db
+  q clinlims 'create extension if not exists "uuid-ossp"; create extension if not exists unaccent' >/dev/null
+else
+  echo "db-init: creating role + database + extensions"
+  psql -U "$PG_SUPERUSER" -d postgres -v ON_ERROR_STOP=1 -v pw="$OE_DB_PASSWORD" -f /db-prep/roles.sql
 fi
-
-echo "db-init: creating role + database + extensions"
-psql -U "$PG_SUPERUSER" -d postgres -v ON_ERROR_STOP=1 -v pw="$OE_DB_PASSWORD" -f /db-prep/roles.sql
 
 # Baseline + site rows run as the superuser, exactly like the stock DB image does (the dump carries
 # COMMENT ON EXTENSION and OWNER TO postgres for tablefunc, which only a superuser may run). App objects
