@@ -48,7 +48,7 @@ services:
         # exist yet, exits 0. Idempotent: on every later `up` it finds the DB and exits.
         # The SQL comes from this image at the SAME tag as the app (bumps together).
         container_name: openelis-db-init
-        image: itechuw/openelis-global-2-database:3.2.2.0
+        image: itechuw/openelis-global-2-database:3.2.3.0
         platform: linux/amd64
         restart: "no"
         entrypoint: ["/bin/sh", "/db-prep/init.sh"]
@@ -66,7 +66,7 @@ services:
 
     oe.openelis.org:
         container_name: openelisglobal-webapp 
-        image: itechuw/openelis-global-2:3.2.2.0 
+        image: itechuw/openelis-global-2:3.2.3.0 
         platform: linux/amd64  
         ports:
             - "127.0.0.1:${OE_API_LOCAL_PORT:-8443}:8443"   # host nginx -> /api/ ; never public
@@ -109,7 +109,7 @@ services:
             
     fhir.openelis.org:
         container_name: external-fhir-api
-        image: itechuw/openelis-global-2-fhir:3.2.2.0
+        image: itechuw/openelis-global-2-fhir:3.2.3.0
         platform: linux/amd64
         depends_on:
             certs:
@@ -141,7 +141,7 @@ services:
             -  key_trust-store-volume:/etc/openelis-global 
        
     frontend.openelis.org:
-        image: itechuw/openelis-global-2-frontend:3.2.2.0
+        image: itechuw/openelis-global-2-frontend:3.2.3.0
         container_name: openelisglobal-front-end
         platform: linux/amd64
         ports:
